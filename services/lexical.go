@@ -8,38 +8,87 @@ import (
 
 func AnalyzeLexical(code string) models.LexicalResult {
 	summary := map[string]int{
-		"PR": 0, "ID": 0, "Numeros": 0, "Simbolos": 0, "Error": 0,
+		"PR": 0,      // Palabras reservadas
+		"ID": 0,      // Identificadores
+		"Numeros": 0, // Números
+		"Simbolos": 0,// Símbolos y operadores
+		"Error": 0,   // Errores léxicos
 	}
 
-	keywords := []string{"def", "if", "else", "print", "True", "False"}
+	// Palabras reservadas de C++
+	keywords := []string{
+		"int", "float", "double", "char", "bool", "void", "string",
+		"if", "else", "while", "for", "do", "switch", "case", "default",
+		"break", "continue", "return", "goto", "sizeof", "typedef",
+		"struct", "union", "enum", "class", "public", "private", "protected",
+		"virtual", "static", "const", "volatile", "extern", "register",
+		"auto", "signed", "unsigned", "long", "short", "inline",
+		"template", "typename", "namespace", "using", "new", "delete",
+		"this", "try", "catch", "throw", "true", "false", "nullptr",
+		"main", "std", "cout", "cin", "endl", "include", "define",
+	}
+
+	// Remover comentarios primero
+	cleanCode := removeComments(code)
 	
-	// Tokenizar básico
-	tokens := strings.Fields(strings.ReplaceAll(code, "\n", " "))
+	// Contar string literals primero y removerlos del análisis posterior
+	stringLiterals := countAndRemoveStringLiterals(cleanCode)
+	summary["Simbolos"] += stringLiterals.count
+	codeWithoutStrings := stringLiterals.cleanCode
+
+	// Expresiones regulares para diferentes tipos de tokens
+	regexes := map[string]*regexp.Regexp{
+		"numbers":     regexp.MustCompile(`\b\d+(\.\d+)?\b`),
+		"identifiers": regexp.MustCompile(`\b[a-zA-Z_][a-zA-Z0-9_]*\b`),
+		"symbols":     regexp.MustCompile(`[\+\-\*/=<>!&|%^~(){}\[\];,.:?]|<<|>>|<=|>=|==|!=|&&|\|\||\+\+|--|\+=|-=|\*=|/=|%=`),
+		"chars":       regexp.MustCompile(`'[^']*'`),
+	}
+
+	// Contar números
+	numbers := regexes["numbers"].FindAllString(codeWithoutStrings, -1)
+	summary["Numeros"] = len(numbers)
+
+	// Contar símbolos (excluyendo los ya contados en strings)
+	symbols := regexes["symbols"].FindAllString(codeWithoutStrings, -1)
+	summary["Simbolos"] += len(symbols)
+
+	// Contar caracteres literales
+	char_literals := regexes["chars"].FindAllString(codeWithoutStrings, -1)
+	summary["Simbolos"] += len(char_literals)
+
+	// Identificar palabras reservadas e identificadores
+	identifiers := regexes["identifiers"].FindAllString(codeWithoutStrings, -1)
 	
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		
-		// Separar símbolos del token
-		cleanToken := regexp.MustCompile(`[^a-zA-Z0-9_]`).ReplaceAllString(token, "")
-		symbols := regexp.MustCompile(`[^a-zA-Z0-9_\s]`).FindAllString(token, -1)
-		
-		// Contar símbolos
-		summary["Simbolos"] += len(symbols)
-		
-		if cleanToken != "" {
-			if contains(keywords, cleanToken) {
+	// Crear sets para evitar duplicados
+	foundKeywords := make(map[string]bool)
+	foundIdentifiers := make(map[string]bool)
+	
+	for _, token := range identifiers {
+		if containsString(keywords, strings.ToLower(token)) || containsString(keywords, token) {
+			if !foundKeywords[token] {
+				foundKeywords[token] = true
 				summary["PR"]++
-			} else if matched, _ := regexp.MatchString(`^\d+$`, cleanToken); matched {
-				summary["Numeros"]++
-			} else if matched, _ := regexp.MatchString(`^[a-zA-Z_][a-zA-Z0-9_]*$`, cleanToken); matched {
-				summary["ID"]++
-			} else {
-				summary["Error"]++
 			}
+		} else if isValidIdentifier(token) {
+			if !foundIdentifiers[token] {
+				foundIdentifiers[token] = true
+				summary["ID"]++
+			}
+		} else {
+			summary["Error"]++
 		}
+	}
+
+	// Verificar errores léxicos básicos
+	errorPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`\d+[a-zA-Z]+`), // Números seguidos de letras
+		regexp.MustCompile(`"[^"]*$`),      // Strings sin cerrar
+		regexp.MustCompile(`'[^']*$`),      // Chars sin cerrar
+	}
+
+	for _, pattern := range errorPatterns {
+		errors := pattern.FindAllString(code, -1)
+		summary["Error"] += len(errors)
 	}
 
 	total := summary["PR"] + summary["ID"] + summary["Numeros"] + summary["Simbolos"] + summary["Error"]
@@ -47,8 +96,44 @@ func AnalyzeLexical(code string) models.LexicalResult {
 	return models.LexicalResult{Summary: summary, Total: total}
 }
 
-// Función auxiliar
-func contains(slice []string, item string) bool {
+type StringLiteralResult struct {
+	count     int
+	cleanCode string
+}
+
+func countAndRemoveStringLiterals(code string) StringLiteralResult {
+	// Contar y remover string literals
+	stringRegex := regexp.MustCompile(`"[^"]*"`)
+	matches := stringRegex.FindAllString(code, -1)
+	cleanCode := stringRegex.ReplaceAllString(code, `""`)
+	
+	return StringLiteralResult{
+		count:     len(matches),
+		cleanCode: cleanCode,
+	}
+}
+
+func removeComments(code string) string {
+	// Remover comentarios de línea //
+	lineCommentRegex := regexp.MustCompile(`//.*`)
+	code = lineCommentRegex.ReplaceAllString(code, "")
+	
+	// Remover comentarios de bloque /* */
+	blockCommentRegex := regexp.MustCompile(`/\*[\s\S]*?\*/`)
+	code = blockCommentRegex.ReplaceAllString(code, "")
+	
+	return code
+}
+
+func isValidIdentifier(token string) bool {
+	// Un identificador válido en C++ debe empezar con letra o _
+	// y contener solo letras, números y _
+	matched, _ := regexp.MatchString(`^[a-zA-Z_][a-zA-Z0-9_]*$`, token)
+	return matched
+}
+
+// Función auxiliar para verificar si un item está en un slice
+func containsString(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
 			return true
